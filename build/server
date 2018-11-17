@@ -4359,7 +4359,7 @@ exports.autoMaxBins = autoMaxBins;
 
 // utility for a field definition object
 Object.defineProperty(exports, "__esModule", { value: true });
-var tslib_1 = __webpack_require__(71);
+var tslib_1 = __webpack_require__(72);
 var aggregate_1 = __webpack_require__(20);
 var bin_1 = __webpack_require__(28);
 var channel_1 = __webpack_require__(3);
@@ -8754,6 +8754,136 @@ var express = __webpack_require__(31);
 var api_1 = __webpack_require__(58);
 var utils_1 = __webpack_require__(62);
 var router = express.Router();
+// PostgreSQL client initialization
+var pg = __webpack_require__(71);
+var pghost = 'localhost';
+var pgport = '5432';
+var pgdb = 'voyager';
+var connectionString = 'postgres://' + pghost + ':' + pgport + '/' + pgdb;
+console.log('Connecting to ' + connectionString);
+var client = new pg.Client(connectionString);
+client.connect();
+var tableNameCounter = 0;
+function listToSQLTuple(l, keepQuotes) {
+    var out = JSON.stringify(l);
+    out = out.substring(1, out.length - 1);
+    out = out.replace(/'/g, '\'\'');
+    out = out.replace(/"/g, keepQuotes ? '\'' : '');
+    return out;
+}
+function createInsertQueryStrFor(tableName, schema, data) {
+    var attrNames = [];
+    for (var attrName in schema) {
+        if (!schema.hasOwnProperty(attrName)) {
+            continue;
+        }
+        attrNames.push(attrName);
+    }
+    var attrNamesStr = listToSQLTuple(attrNames, false);
+    var attrVals = [];
+    for (var i = 0; i < attrNames.length; i++) {
+        attrVals.push(data[attrNames[i]]);
+    }
+    var attrValsStr = listToSQLTuple(attrVals, true);
+    var out = 'INSERT INTO ' + tableName + '(' + attrNamesStr + ') VALUES (' + attrValsStr + ');';
+    return out;
+}
+function handleInsertQuery(err, res, queryStr, data) {
+    if (err) {
+        console.log(err);
+        console.log('Query string: ' + queryStr);
+        console.log('Data: ' + JSON.stringify(data));
+    }
+}
+function insertValues(tableName, schema, data) {
+    var _loop_1 = function (i) {
+        var insertQueryStr = createInsertQueryStrFor(tableName, schema, data[i]);
+        if (i === 0) {
+            console.log('INFO: running insert queries. Example: ' + insertQueryStr);
+        }
+        var insertQuery = client.query(insertQueryStr, function (err, res) { handleInsertQuery(err, res, insertQueryStr, data[i]); });
+    };
+    for (var i = 0; i < data.length; i++) {
+        _loop_1(i);
+    }
+}
+function handleCreateTableQuery(err, res, tableName, schema, data) {
+    if (err) {
+        console.log(err);
+    }
+    else {
+        insertValues(tableName, schema, data);
+    }
+}
+function createTableQueryStrFor(tableName, schema) {
+    var out = 'CREATE TABLE ' + tableName + '(';
+    var first = true;
+    for (var attrName in schema) {
+        if (!schema.hasOwnProperty(attrName)) {
+            continue;
+        }
+        var attrType = schema[attrName];
+        if (first) {
+            first = false;
+        }
+        else {
+            out += ', ';
+        }
+        out += (attrName + ' ' + attrType);
+    }
+    out += ')';
+    return out;
+}
+function handleTableExistsQuery(err, res, tableName, data) {
+    if (err) {
+        console.log(err);
+    }
+    else if (res.rows[0]['exists']) {
+        console.log('WARNING: table \'' + tableName + ' \'already exists, will not update');
+    }
+    else {
+        console.log('INFO: table ' + tableName + ' does not exist -- creating');
+        var schema_1 = postgresSchemaFor(data[0]);
+        var createTableQueryStr = createTableQueryStrFor(tableName, schema_1);
+        console.log('INFO: running create query: ' + createTableQueryStr);
+        var createTableQuery = client.query(createTableQueryStr, function (err, res) { handleCreateTableQuery(err, res, tableName, schema_1, data); });
+    }
+}
+function createTable(data) {
+    // Check if table exists
+    // FixMe: use real table name
+    var tableName = 'table' + (++tableNameCounter);
+    var existsQueryStr = 'SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name=' +
+        '\'' + tableName + '\');';
+    var existsQuery = client.query(existsQueryStr, function (err, res) { handleTableExistsQuery(err, res, tableName, data); });
+}
+function postgresTypeFor(value) {
+    // FixMe: want to use INTs too, if possible. Client needs to send more data.
+    var type = typeof value;
+    if (type === 'string') {
+        return 'VARCHAR(128)';
+    }
+    else if (type === 'number') {
+        return 'FLOAT';
+    }
+    else if (type === 'boolean') {
+        return 'BOOLEAN';
+    }
+    else {
+        console.log('ERROR: undefined type: \'' + type + '\'');
+    }
+}
+function postgresSchemaFor(dataObj) {
+    var schema = {};
+    for (var property in dataObj) {
+        if (dataObj.hasOwnProperty(property)) {
+            var pgType = postgresTypeFor(dataObj[property]);
+            schema[property] = postgresTypeFor(dataObj[property]);
+        }
+    }
+    console.log('INFO: built postgres schema: ' + JSON.stringify(schema));
+    return schema;
+}
 /**
  * Root Route
  * Just returns dummy JSON to indicate server is responsive
@@ -8771,7 +8901,7 @@ router.route('/recommend').post(function (req, res) {
     var data = req.body.data;
     var schema = new api_1.Schema({ fields: fieldSchemas });
     api_1.fetchCompassQLRecommend(query, schema, data).then(function (result) {
-        res.status(200).send(utils_1.serializeGroup(result));
+        res.status(200).send(result);
     });
 });
 /**
@@ -8780,9 +8910,26 @@ router.route('/recommend').post(function (req, res) {
  */
 router.route('/build').post(function (req, res) {
     var data = req.body.data;
+    if (data.length !== 0) {
+        // FixMe: client needs to pass actual table name.
+        createTable(data);
+    }
+    else {
+        console.log("WARNING: data len is 0, could not build schema or create table");
+    }
     api_1.fetchCompassQLBuildSchema(data).then(function (result) {
         res.status(200).send(utils_1.serializeSchema(result));
     });
+});
+/**
+ * query route
+ * Returns results of query in serialzied JSON.
+ */
+router.route('/query').post(function (req, res) {
+    var data = req.body.data;
+    console.log(data);
+    var result = { "data": "hi" };
+    res.status(200).send(result);
 });
 module.exports = router;
 
@@ -8794,18 +8941,6 @@ module.exports = router;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", { value: true });
-/*
- * Convert Group Object to plain JSON
- */
-function serializeGroup(group) {
-    return {
-        name: group.name,
-        items: group.items,
-        groupBy: group.groupBy,
-        orderGroupBy: group.orderGroupBy
-    };
-}
-exports.serializeGroup = serializeGroup;
 /*
  * Convert Schema Object to plain JSON
  */
@@ -9161,6 +9296,12 @@ module.exports = require("json-stable-stringify");
 
 /***/ }),
 /* 71 */
+/***/ (function(module, exports) {
+
+module.exports = require("pg");
+
+/***/ }),
+/* 72 */
 /***/ (function(module, exports) {
 
 module.exports = require("tslib");
