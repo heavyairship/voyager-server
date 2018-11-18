@@ -1,5 +1,4 @@
 import * as express from 'express';
-
 import {fetchCompassQLBuildSchema, fetchCompassQLRecommend, Schema} from 'datavoyager/build/src/api/api';
 import {Data} from 'vega-lite/build/src/data';
 import {serializeSchema} from './utils';
@@ -8,14 +7,40 @@ const router = express.Router();
 
 // PostgreSQL client initialization
 const pg = require('pg');
-const pghost = 'localhost'
-const pgport = '5432'
-const pgdb = 'voyager'
+const pghost = 'localhost';
+const pgport = '5432';
+const pgdb = 'voyager';
 const connectionString = 'postgres://' + pghost + ':' + pgport  + '/' + pgdb;
 console.log('Connecting to '+connectionString);
 const client = new pg.Client(connectionString);
 client.connect();
 var tableNameCounter = 0;
+
+function postgresTypeFor(value : any): string {
+  // FixMe: want to use INTs too, if possible. Client needs to send more data.
+  const type = typeof value;
+  if(type === 'string') {
+    return 'VARCHAR(128)';
+  } else if(type === 'number') {
+    return 'FLOAT';
+  } else if(type === 'boolean') {
+    return 'BOOLEAN';
+  } else {
+    console.log('ERROR: undefined type: \'' + type + '\'');
+  }
+}
+
+function postgresSchemaFor(dataObj: any): string {
+  let schema: any = {}
+  for(var property in dataObj) {
+    if(dataObj.hasOwnProperty(property)) {
+      let pgType = postgresTypeFor(dataObj[property]);
+      schema[property] = postgresTypeFor(dataObj[property]);
+    }
+  }
+  console.log('INFO: built postgres schema: '+JSON.stringify(schema));
+  return schema;
+}
 
 function listToSQLTuple(l: any[], keepQuotes: boolean): string {
   let out: string = JSON.stringify(l);
@@ -116,32 +141,6 @@ function createTable(data: any[]): void {
     (err: any, res: any) => {handleTableExistsQuery(err, res, tableName, data)});
 }
 
-function postgresTypeFor(value : any): string {
-  // FixMe: want to use INTs too, if possible. Client needs to send more data.
-  const type = typeof value;
-  if(type === 'string') {
-    return 'VARCHAR(128)';
-  } else if(type === 'number') {
-    return 'FLOAT';
-  } else if(type === 'boolean') {
-    return 'BOOLEAN';
-  } else {
-    console.log('ERROR: undefined type: \'' + type + '\'');
-  }
-}
-
-function postgresSchemaFor(dataObj: any): string {
-  let schema: any = {}
-  for(var property in dataObj) {
-    if(dataObj.hasOwnProperty(property)) {
-      let pgType = postgresTypeFor(dataObj[property]);
-      schema[property] = postgresTypeFor(dataObj[property]);
-    }
-  }
-  console.log('INFO: built postgres schema: '+JSON.stringify(schema));
-  return schema;
-}
-
 /**
  * Root Route
  * Just returns dummy JSON to indicate server is responsive
@@ -176,7 +175,7 @@ router.route('/build').post((req: express.Request, res: express.Response) => {
     // FixMe: client needs to pass actual table name.
     createTable(data);
   } else {
-    console.log("WARNING: data len is 0, could not build schema or create table");
+    console.log('WARNING: data len is 0, could not build schema or create table');
   }
   fetchCompassQLBuildSchema(data).then(
     result => {
@@ -190,10 +189,18 @@ router.route('/build').post((req: express.Request, res: express.Response) => {
  * Returns results of query in serialzied JSON.
  */
 router.route('/query').post((req: express.Request, res: express.Response) => {
-  const data = req.body.data;
-  console.log(data);
-  let result : any = {"data" : "hi"}
-  res.status(200).send(result);
+  const queryStr = req.body.data['query'];
+  console.log('INFO: running query: ' + queryStr);
+  const query = client.query(queryStr, 
+    (err: any, results: any) => {
+      if(err) {
+        console.log(err);
+        res.status(500).send(err);
+      } else {
+        res.status(200).send(results); 
+      }
+    }
+  ); 
 });
 
 export = router;
