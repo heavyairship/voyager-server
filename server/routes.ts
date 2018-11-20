@@ -131,10 +131,9 @@ function handleTableExistsQuery(err: any, res: any, tableName: string, data: any
   }
 }
 
-function createTable(data: any[]): void {
+function createTable(data: any[], tableName: string): void {
   // Check if table exists
   // FixMe: use real table name
-  const tableName = 'table' + (++tableNameCounter);
   const existsQueryStr = 'SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='+
     '\'' + tableName + '\');'
   const existsQuery = client.query(existsQueryStr, 
@@ -171,9 +170,10 @@ router.route('/recommend').post((req: express.Request, res: express.Response) =>
  */
 router.route('/build').post((req: express.Request, res: express.Response) => {
   const data = req.body.data;
+  const name = req.body.name;
   if(data.length !== 0) {
     // FixMe: client needs to pass actual table name.
-    createTable(data);
+    createTable(data, name);
   } else {
     console.log('WARNING: data len is 0, could not build schema or create table');
   }
