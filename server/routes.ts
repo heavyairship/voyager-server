@@ -133,9 +133,14 @@ function handleTableExistsQuery(err: any, res: any, tableName: string, data: any
 
 function createTable(data: any[], tableName: string): void {
   // Check if table exists
-  // FixMe: use real table name
+  // Note: lower-case is required to prevent the exists query from generating false negatives.
+  // If 'Cars' is passed in as a name initially, 'cars' will be stored in postgres' 
+  // information_schema. Then, if 'Cars' is passed in again, the exists query will erroneously 
+  // report false since 'Cars' != 'cars', even though both names refer to the same table in 
+  // postgres. To prevent this, we just change table names to all lower-case before the exists
+  // check query.
   const existsQueryStr = 'SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='+
-    '\'' + tableName + '\');'
+    '\'' + tableName.toLowerCase() + '\');'
   const existsQuery = client.query(existsQueryStr, 
     (err: any, res: any) => {handleTableExistsQuery(err, res, tableName, data)});
 }
