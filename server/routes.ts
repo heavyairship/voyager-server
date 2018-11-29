@@ -38,7 +38,6 @@ function postgresSchemaFor(dataObj: any): string {
       schema[property] = postgresTypeFor(dataObj[property]);
     }
   }
-  console.log('INFO: built postgres schema: '+JSON.stringify(schema));
   return schema;
 }
 
@@ -70,30 +69,26 @@ function createInsertQueryStrFor(tableName: string, schema: any, data: any): str
   return out;
 }
 
-function handleInsertQuery(err: any, res: any, queryStr: string, data: any): void {
-  if(err) {
-    console.log(err);
-    console.log('Query string: ' + queryStr);
-    console.log('Data: ' + JSON.stringify(data));
-  }
-}
-
-function insertValues(tableName: string, schema: any, data: any[]): void {
+function insertValues(tableName: string, data: any[], res: express.Response): void {
+  const schema = postgresSchemaFor(data[0]);
   for(let i: number = 0; i < data.length; i++) {
     let insertQueryStr: string = createInsertQueryStrFor(tableName, schema, data[i]);
     if(i === 0) {
       console.log('INFO: running insert queries. Example: ' + insertQueryStr);
     }
-    const insertQuery = client.query(insertQueryStr,
-      (err: any, res: any) => {handleInsertQuery(err, res, insertQueryStr, data[i])});
-  }
-}
-
-function handleCreateTableQuery(err: any, res: any, tableName: string, schema:any, data: any[]): void {
-  if(err) {
-    console.log(err);
-  } else {
-    insertValues(tableName, schema, data); 
+    const insertQuery = client.query(insertQueryStr, (err: any, response: any) => {
+      if(err) {
+        console.log(err);
+      }
+      if(i === (data.length-1)) {
+        // FixMe: I don't think this is strictly correct. We don't
+        // want to set the status until all the queries have completed.
+        // Ideally, we will batch all the insert queries into a single one
+        // and add this in the call back to that single batched query. 
+        // We can use pg-format or node-sql for this.
+        res.status(200).send();
+      }
+    });
   }
 }
 
@@ -114,38 +109,6 @@ function createTableQueryStrFor(tableName: string, schema: any): string {
   }
   out += ')';
   return out;
-}
-
-function handleTableExistsQuery(err: any, res: any, tableName: string, data: any[]): void {
-  const schema = postgresSchemaFor(data[0]);
-  if(err) {
-    console.log(err);
-  } else if(res.rows[0]['exists']) {
-    console.log('WARNING: table \'' + tableName + 
-      ' \'already exists. Performing bag-semantics update');
-    insertValues(tableName, schema, data);
-  } else {
-    console.log('INFO: table ' + tableName + ' does not exist -- creating');
-    const createTableQueryStr = createTableQueryStrFor(tableName, schema);
-    console.log('INFO: running create query: ' + createTableQueryStr);  
-    const createTableQuery = client.query(createTableQueryStr,
-      (err: any, res: any) => {handleCreateTableQuery(err, res, tableName, schema, data)});
-  }
-}
-
-function createTable(data: any[], tableName: string): any {
-  // Check if table exists
-  // Note: lower-case is required to prevent the exists query from generating false negatives.
-  // If 'Cars' is passed in as a name initially, 'cars' will be stored in postgres' 
-  // information_schema. Then, if 'Cars' is passed in again, the exists query will erroneously 
-  // report false since 'Cars' != 'cars', even though both names refer to the same table in 
-  // postgres. To prevent this, we just change table names to all lower-case before the exists
-  // check query.
-  const existsQueryStr = 'SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='+
-    '\'' + tableName.toLowerCase() + '\');'
-  const existsQuery = client.query(existsQueryStr, 
-    (err: any, res: any) => {handleTableExistsQuery(err, res, tableName, data)});
-  return existsQuery;
 }
 
 /**
@@ -173,19 +136,60 @@ router.route('/recommend').post((req: express.Request, res: express.Response) =>
 });
 
 /**
+ * insertSQL route
+ * Inserts data into SQL table.
+ */
+router.route('/insertSql').post((req: express.Request, res: express.Response) => {
+  // FixMe: if there are network issues, it is possible for this 
+  // request to be received. This will result in duplicate entries,
+  // which is bad. We need a way to identify requests so that we can
+  // not process duplicates. 
+  const chunk = req.body.data;
+  if(chunk.length === 0) {
+    console.log('WARNING: empty data passed to /insertSql');
+    res.status(200).send();
+    return;
+  }
+  insertValues(req.body.name, chunk, res);
+});
+
+/**
  * createSQL route
- * Builds sql table from dataset.
+ * Creates SQL table using schema inferred from data sample.
  */
 router.route('/createSql').post((req: express.Request, res: express.Response) => {
-  // FixMe: need to use promises here for better organization/error handling.
-  const data = req.body.data;
+  const sample = req.body.data;
   const name = req.body.name;
-  if(data.length !== 0) {
-    createTable(data, name).then(() => res.status(200).send());
-  } else {
-    console.log('WARNING: data len is 0, could not build schema or create table');
-    res.status(200).send();
-  }
+  const existsQueryStr = 'SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='+
+    '\'' + name.toLowerCase() + '\');'
+  client.query(existsQueryStr, (err: any, response: any) => {
+    if(err) {
+      // Exists query failed
+      console.log(err);
+      res.status(500).send(err);
+    } else if(response.rows[0]['exists']) {
+      // Table exists
+      res.status(200).send({exists: true});
+      console.log('WARNING: table \'' + name + ' \'already exists.');
+    } else {
+      // Table doesn't exist, so create it
+      console.log('INFO: table ' + name + ' does not exist -- creating');
+      const schema = postgresSchemaFor(sample);
+      console.log('INFO: built postgres schema: '+JSON.stringify(schema));
+      const createTableQueryStr = createTableQueryStrFor(name, schema);
+      console.log('INFO: running create query: ' + createTableQueryStr);  
+      client.query(createTableQueryStr, (err: any, response: any) => {
+        if(err) {
+          // Table create query failure
+          console.log(err);
+          res.status(500).send(err);
+        } else {
+          // Table create query success
+          res.status(200).send({exists: false});
+        }
+      });
+    }
+  });
 });
  
 /**
@@ -196,40 +200,33 @@ router.route('/build').post((req: express.Request, res: express.Response) => {
   const name = req.body.name;
   const queryStr = 'SELECT * FROM ' + name + ';';
   console.log('INFO: running query for /build: ' + queryStr);
-  const query = client.query(queryStr, 
-    (err: any, data: any) => {
-      if(err) {
-        console.log(err);
-        res.status(500).send(err);
-      } else {
-        fetchCompassQLBuildSchema(data.rows).then(
-          result => {
-            res.status(200).send(serializeSchema(result));
-          }
-        );
-      }
+  const query = client.query(queryStr, (err: any, data: any) => {
+    if(err) {
+      console.log(err);
+      res.status(500).send(err);
+    } else {
+      fetchCompassQLBuildSchema(data.rows).then(result => {
+        res.status(200).send(serializeSchema(result));
+      });
     }
-  ); 
-
+  }); 
 });
 
 /**
- * query route
+ * querySql route
  * Returns results of query in serialzied JSON.
  */
-router.route('/query').post((req: express.Request, res: express.Response) => {
+router.route('/querySql').post((req: express.Request, res: express.Response) => {
   const queryStr = req.body.data['query'];
-  console.log('INFO: running query for /query: ' + queryStr);
-  const query = client.query(queryStr, 
-    (err: any, results: any) => {
-      if(err) {
-        console.log(err);
-        res.status(500).send(err);
-      } else {
-        res.status(200).send(results); 
-      }
+  console.log('INFO: running query for /querySql: ' + queryStr);
+  const query = client.query(queryStr, (err: any, results: any) => {
+    if(err) {
+      console.log(err);
+      res.status(500).send(err);
+    } else {
+      res.status(200).send(results); 
     }
-  ); 
+  }); 
 });
 
 export = router;
