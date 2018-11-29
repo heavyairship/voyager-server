@@ -117,13 +117,15 @@ function createTableQueryStrFor(tableName: string, schema: any): string {
 }
 
 function handleTableExistsQuery(err: any, res: any, tableName: string, data: any[]): void {
+  const schema = postgresSchemaFor(data[0]);
   if(err) {
     console.log(err);
   } else if(res.rows[0]['exists']) {
-    console.log('WARNING: table \'' + tableName + ' \'already exists, will not update');
+    console.log('WARNING: table \'' + tableName + 
+      ' \'already exists. Performing bag-semantics update');
+    insertValues(tableName, schema, data);
   } else {
     console.log('INFO: table ' + tableName + ' does not exist -- creating');
-    const schema = postgresSchemaFor(data[0])
     const createTableQueryStr = createTableQueryStrFor(tableName, schema);
     console.log('INFO: running create query: ' + createTableQueryStr);  
     const createTableQuery = client.query(createTableQueryStr,
@@ -131,7 +133,7 @@ function handleTableExistsQuery(err: any, res: any, tableName: string, data: any
   }
 }
 
-function createTable(data: any[], tableName: string): void {
+function createTable(data: any[], tableName: string): any {
   // Check if table exists
   // Note: lower-case is required to prevent the exists query from generating false negatives.
   // If 'Cars' is passed in as a name initially, 'cars' will be stored in postgres' 
@@ -143,6 +145,7 @@ function createTable(data: any[], tableName: string): void {
     '\'' + tableName.toLowerCase() + '\');'
   const existsQuery = client.query(existsQueryStr, 
     (err: any, res: any) => {handleTableExistsQuery(err, res, tableName, data)});
+  return existsQuery;
 }
 
 /**
@@ -170,23 +173,44 @@ router.route('/recommend').post((req: express.Request, res: express.Response) =>
 });
 
 /**
+ * createSQL route
+ * Builds sql table from dataset.
+ */
+router.route('/createSql').post((req: express.Request, res: express.Response) => {
+  // FixMe: need to use promises here for better organization/error handling.
+  const data = req.body.data;
+  const name = req.body.name;
+  if(data.length !== 0) {
+    createTable(data, name).then(() => res.status(200).send());
+  } else {
+    console.log('WARNING: data len is 0, could not build schema or create table');
+    res.status(200).send();
+  }
+});
+ 
+/**
  * build route
  * Returns from fetchCompassQLBuildSchema in serialzied JSON.
  */
 router.route('/build').post((req: express.Request, res: express.Response) => {
-  const data = req.body.data;
   const name = req.body.name;
-  if(data.length !== 0) {
-    // FixMe: client needs to pass actual table name.
-    createTable(data, name);
-  } else {
-    console.log('WARNING: data len is 0, could not build schema or create table');
-  }
-  fetchCompassQLBuildSchema(data).then(
-    result => {
-      res.status(200).send(serializeSchema(result));
+  const queryStr = 'SELECT * FROM ' + name + ';';
+  console.log('INFO: running query for /build: ' + queryStr);
+  const query = client.query(queryStr, 
+    (err: any, data: any) => {
+      if(err) {
+        console.log(err);
+        res.status(500).send(err);
+      } else {
+        fetchCompassQLBuildSchema(data.rows).then(
+          result => {
+            res.status(200).send(serializeSchema(result));
+          }
+        );
+      }
     }
-  );
+  ); 
+
 });
 
 /**
@@ -195,7 +219,7 @@ router.route('/build').post((req: express.Request, res: express.Response) => {
  */
 router.route('/query').post((req: express.Request, res: express.Response) => {
   const queryStr = req.body.data['query'];
-  console.log('INFO: running query: ' + queryStr);
+  console.log('INFO: running query for /query: ' + queryStr);
   const query = client.query(queryStr, 
     (err: any, results: any) => {
       if(err) {
