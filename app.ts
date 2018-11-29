@@ -13,8 +13,11 @@ const app = express();
 
 app.set('env', ENV);
 
+// A high limit is important for handling large datasets. We want to 
+// keep the body parsing limit large to avoid multiple
+// round trips when sending chunked data.
 app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '20mb', type: 'application/json' }));
 app.use(cors());
 
 // use server/routes.ts for handling responses
