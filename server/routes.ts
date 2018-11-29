@@ -107,7 +107,7 @@ function createTableQueryStrFor(tableName: string, schema: any): string {
     }
     out += (attrName + ' ' + attrType)
   }
-  out += ')';
+  out += ');';
   return out;
 }
 
@@ -154,10 +154,10 @@ router.route('/insertSql').post((req: express.Request, res: express.Response) =>
 });
 
 /**
- * createSQL route
- * Creates SQL table using schema inferred from data sample.
+ * checkExistsSql route
+ * Check if PostgreSQL table exists.
  */
-router.route('/createSql').post((req: express.Request, res: express.Response) => {
+router.route('/checkExistsSql').post((req: express.Request, res: express.Response) => {
   const sample = req.body.data;
   const name = req.body.name;
   const existsQueryStr = 'SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='+
@@ -170,24 +170,35 @@ router.route('/createSql').post((req: express.Request, res: express.Response) =>
     } else if(response.rows[0]['exists']) {
       // Table exists
       res.status(200).send({exists: true});
-      console.log('WARNING: table \'' + name + ' \'already exists.');
+      console.log('INFO: table ' + name + ' already exists.');
     } else {
-      // Table doesn't exist, so create it
-      console.log('INFO: table ' + name + ' does not exist -- creating');
-      const schema = postgresSchemaFor(sample);
-      console.log('INFO: built postgres schema: '+JSON.stringify(schema));
-      const createTableQueryStr = createTableQueryStrFor(name, schema);
-      console.log('INFO: running create query: ' + createTableQueryStr);  
-      client.query(createTableQueryStr, (err: any, response: any) => {
-        if(err) {
-          // Table create query failure
-          console.log(err);
-          res.status(500).send(err);
-        } else {
-          // Table create query success
-          res.status(200).send({exists: false});
-        }
-      });
+      // Table doesn't exist
+      console.log('INFO: table ' + name + ' does not exist');
+      res.status(200).send({exists: false});
+    }
+  });
+});
+
+/**
+ * createSQL route
+ * Creates SQL table using schema inferred from data sample.
+ */
+router.route('/createSql').post((req: express.Request, res: express.Response) => {
+  const sample = req.body.data;
+  const name = req.body.name;
+  console.log('INFO: creating table ' + name);
+  const schema = postgresSchemaFor(sample);
+  console.log('INFO: built postgres schema: '+JSON.stringify(schema));
+  const createTableQueryStr = createTableQueryStrFor(name, schema);
+  console.log('INFO: running create query: ' + createTableQueryStr);  
+  client.query(createTableQueryStr, (err: any, response: any) => {
+    if(err) {
+      // Table create query failure
+      console.log(err);
+      res.status(500).send(err);
+    } else {
+      // Table create query success
+      res.status(200).send();
     }
   });
 });
