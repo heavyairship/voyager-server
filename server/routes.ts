@@ -6,6 +6,7 @@ import {serializeSchema} from './utils';
 const router = express.Router();
 
 // PostgreSQL client initialization
+const format = require('pg-format')
 const pg = require('pg');
 const pghost = 'localhost';
 const pgport = '5432';
@@ -49,7 +50,9 @@ function listToSQLTuple(l: any[], keepQuotes: boolean): string {
   return out;
 }
 
-function createInsertQueryStrFor(tableName: string, schema: any, data: any): string {
+function insertValues(tableName: string, data: any[], res: express.Response): void {
+  // Build attribute list string e.g. (attr1, attr2, attr3)
+  const schema: any = postgresSchemaFor(data[0]);
   let attrNames: string[] = [];
   for(var attrName in schema) {
     if(!schema.hasOwnProperty(attrName)) {
@@ -57,39 +60,31 @@ function createInsertQueryStrFor(tableName: string, schema: any, data: any): str
     }
     attrNames.push(attrName);
   }
-  let attrNamesStr = listToSQLTuple(attrNames, false);
-
-  let attrVals: any[] = [];
-  for(let i: number = 0; i < attrNames.length; i++) {
-    attrVals.push(data[attrNames[i]]);
-  }
-  let attrValsStr = listToSQLTuple(attrVals, true);
-
-  let out: string = 'INSERT INTO ' + tableName + '(' +attrNamesStr + ') VALUES (' + attrValsStr + ');';
-  return out;
-}
-
-function insertValues(tableName: string, data: any[], res: express.Response): void {
-  const schema = postgresSchemaFor(data[0]);
+  const attrNamesStr = listToSQLTuple(attrNames, false);
+  
+  // Transform data from JSON format into a 2d array where each row is a list of attribute values
+  // with the same attribute order as the attribute list string above.
+  let rows: any[] = [];
   for(let i: number = 0; i < data.length; i++) {
-    let insertQueryStr: string = createInsertQueryStrFor(tableName, schema, data[i]);
-    if(i === 0) {
-      console.log('INFO: running insert queries. Example: ' + insertQueryStr);
+    let item: any = data[i];
+    let row: any[] = [];
+    for(let j: number = 0; j < attrNames.length; j++) {
+      row.push(item[attrNames[j]]);
     }
-    const insertQuery = client.query(insertQueryStr, (err: any, response: any) => {
-      if(err) {
-        console.log(err);
-      }
-      if(i === (data.length-1)) {
-        // FixMe: I don't think this is strictly correct. We don't
-        // want to set the status until all the queries have completed.
-        // Ideally, we will batch all the insert queries into a single one
-        // and add this in the call back to that single batched query. 
-        // We can use pg-format or node-sql for this.
-        res.status(200).send();
-      }
-    });
+    rows.push(row);
   }
+
+  // Execute the insert queries.
+  const queryStr = format('INSERT INTO ' + tableName + ' (' + attrNamesStr + ') VALUES %L', rows); 
+  console.log('INFO: running insert queries for ' + tableName + '...');
+  const query = client.query(queryStr, (err: any, response: any) => {
+    if(err) {
+      console.log(err);
+      res.status(500).send(err);
+    } else {
+      res.status(200).send();
+    }
+  });
 }
 
 function createTableQueryStrFor(tableName: string, schema: any): string {
