@@ -21,7 +21,7 @@ function postgresTypeFor(value : any): string {
   // FixMe: want to use INTs too, if possible. Client needs to send more data.
   const type = typeof value;
   if(type === 'string') {
-    return 'VARCHAR(128)';
+    return 'VARCHAR(256)';
   } else if(type === 'number') {
     return 'FLOAT';
   } else if(type === 'boolean') {
